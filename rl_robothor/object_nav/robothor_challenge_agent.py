@@ -7,11 +7,11 @@ from onpolicy_sync.storage import RolloutStorage
 from utils.tensor_utils import batch_observations
 
 from rl_robothor.object_nav.tasks import ObjectNavTask as TrainingTask
-from experiments.robothor.object_nav_resnet_tensor_50train_5tget import (
+from experiments.robothor.object_nav_resnet_60train_11tget import (
     ObjectNavRoboThorExperimentConfig as ExperimentConfig,
 )
 
-checkpoint_name = "/Users/jordis/Desktop/exp_object_nav_resnet_tensor_50train_5tget__time_2020-02-13_08-48-11__stage_00__steps_000021607500__seed_936652430.pt"
+checkpoint_name = "break"  # "/Users/jordis/Desktop/exp_object_nav_resnet_tensor_50train_5tget__time_2020-02-13_08-48-11__stage_00__steps_000021607500__seed_936652430.pt"
 
 from abc import ABC, abstractmethod
 
