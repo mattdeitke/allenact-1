@@ -1,6 +1,6 @@
 from typing import Dict, List, Any, Tuple
 
-from ..new_robothor_environment import RoboThorEnvironment
+from ..robothor_environment import RoboThorEnvironment
 from rl_ai2thor.object_nav.tasks import ObjectNavTask as BaseObjectNavTask
 from rl_base.sensor import Sensor
 from rl_base.common import RLStepResult
