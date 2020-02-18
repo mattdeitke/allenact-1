@@ -28,7 +28,7 @@ class RoboThorEnvironment:
     def __init__(self, **kwargs):
         recursive_update(self.unity_config, {**kwargs, "agentMode": "bot"})
         self.controller = Controller(**self.unity_config)
-        self.known_good_location = self.current_state()
+        self.known_good_location = self.currently_reachable_points[0]
 
     def current_state(self):
         return {
@@ -41,9 +41,12 @@ class RoboThorEnvironment:
         if scene_name is not None:
             if scene_name != self.scene_name:
                 self.controller.reset(scene_name)
-                self.known_good_location = self.current_state()
+                self.known_good_location = self.currently_reachable_points[0]
             else:
-                self.controller.step("TeleportFull", **self.known_good_location)
+                assert (
+                    self.known_good_location is not None
+                ), "Revisiting scene without known good location"
+                self.controller.step("Teleport", **self.known_good_location)
 
     def randomize_agent_location(
         self, seed: int = None, partial_position: Optional[Dict[str, float]] = None
@@ -54,7 +57,7 @@ class RoboThorEnvironment:
         k = 0
         state: Optional[Dict] = None
 
-        self.controller.step("TeleportFull", **self.known_good_location)
+        self.controller.step("Teleport", **self.known_good_location)
         while k == 0 or (not self.last_action_success and k < 10):
             state = {**self.random_reachable_state(seed=seed), **partial_position}
             self.controller.step("TeleportFull", **state)
