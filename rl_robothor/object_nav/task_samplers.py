@@ -95,5 +95,5 @@ class ObjectNavTaskSampler(BaseObjectNavTaskSampler):
         return self._last_sampled_task
 
     def _create_environment(self):
-        env = RoboThorEnvironment(**self.env_args,)
+        env = RoboThorEnvironment(**self.env_args)
         return env

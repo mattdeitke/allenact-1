@@ -14,7 +14,7 @@ LOGGER = logging.getLogger("embodiedrl")
 
 
 class RoboThorEnvironment:
-    unity_config = dict(
+    config = dict(
         rotateStepDegrees=30,
         visibilityDistance=1.0,
         gridSize=0.25,
@@ -27,9 +27,9 @@ class RoboThorEnvironment:
     )
 
     def __init__(self, **kwargs):
-        recursive_update(self.unity_config, {**kwargs, "agentMode": "bot"})
-        self.controller = Controller(**self.unity_config)
-        self.known_good_location = copy.deepcopy(self.currently_reachable_points[0])
+        recursive_update(self.config, {**kwargs, "agentMode": "bot"})
+        self.controller = Controller(**self.config)
+        self.known_good_location = self.current_state()
 
     def current_state(self):
         return {
@@ -39,14 +39,15 @@ class RoboThorEnvironment:
         }
 
     def reset(self, scene_name=None):
-        assert (
-            self.known_good_location is not None
-        ), "Resetting scene without known good location"
-        self.controller.step("Teleport", **self.known_good_location)
-
         if scene_name is not None and scene_name != self.scene_name:
             self.controller.reset(scene_name)
-            self.known_good_location = copy.deepcopy(self.currently_reachable_points[0])
+            self.known_good_location = self.current_state()
+        else:
+            assert (
+                self.known_good_location is not None
+            ), "Resetting scene without known good location"
+            self.controller.step("TeleportFull", **self.known_good_location)
+            assert self.last_action_success, "Could not reset to known good location"
 
     def randomize_agent_location(
         self, seed: int = None, partial_position: Optional[Dict[str, float]] = None
@@ -85,9 +86,7 @@ class RoboThorEnvironment:
         if seed is not None:
             random.seed(seed)
         xyz = random.choice(self.currently_reachable_points)
-        rotation = random.choice(
-            np.arange(0, 360, self.unity_config["rotateStepDegrees"])
-        )
+        rotation = random.choice(np.arange(0, 360, self.config["rotateStepDegrees"]))
         horizon = random.choice([0, 30, 330])
         return {**xyz, "rotation": rotation, "horizon": horizon}
 
