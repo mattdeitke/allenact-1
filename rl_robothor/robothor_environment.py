@@ -3,6 +3,7 @@ from typing import Any, Optional, Dict, List, Union
 import logging
 import random
 import copy
+from collections import OrderedDict
 
 import ai2thor
 from ai2thor.controller import Controller
@@ -33,11 +34,24 @@ class RoboThorEnvironment:
 
     def agent_state(self):
         agent_meta = self.last_event.metadata["agent"]
-        return {
-            **{k: float(v) for k, v in agent_meta["position"].items()},
-            "rotation": {k: float(v) for k, v in agent_meta["rotation"].items()},
-            "horizon": float(agent_meta["cameraHorizon"]),
-        }
+        return OrderedDict(
+            sorted(
+                [(k, float(v)) for k, v in agent_meta["position"].items()],
+                key=lambda x: x[0],
+            )
+            + [
+                (
+                    "rotation",
+                    OrderedDict(
+                        sorted(
+                            [(k, float(v)) for k, v in agent_meta["rotation"].items()],
+                            key=lambda x: x[0],
+                        )
+                    ),
+                )
+            ]
+            + [("horizon", float(agent_meta["cameraHorizon"]))]
+        )
 
     def reset(self, scene_name=None):
         if scene_name is not None and scene_name != self.scene_name:
@@ -87,8 +101,7 @@ class RoboThorEnvironment:
         rotation = random.choice(
             np.arange(0.0, 360.0, self.config["rotateStepDegrees"])
         )
-        # horizon = random.choice([0.0, 30.0, 330.0])
-        horizon = 0.0
+        horizon = 0.0  # random.choice([0.0, 30.0, 330.0])
         return {
             **{k: float(v) for k, v in xyz.items()},
             "rotation": {"x": 0.0, "y": float(rotation), "z": 0.0},
