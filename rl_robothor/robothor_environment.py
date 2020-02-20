@@ -15,7 +15,7 @@ LOGGER = logging.getLogger("embodiedrl")
 
 class RoboThorEnvironment:
     config = dict(
-        rotateStepDegrees=30,
+        rotateStepDegrees=30.0,
         visibilityDistance=1.0,
         gridSize=0.25,
         agentType="stochastic",
@@ -29,19 +29,21 @@ class RoboThorEnvironment:
     def __init__(self, **kwargs):
         recursive_update(self.config, {**kwargs, "agentMode": "bot"})
         self.controller = Controller(**self.config)
-        self.known_good_location = self.current_state()
+        self.known_good_location = self.agent_state()
 
-    def current_state(self):
+    def agent_state(self):
+        agent_meta = self.last_event.metadata["agent"]
         return {
-            **self.last_event.metadata["agent"]["position"],
-            "rotation": self.last_event.metadata["agent"]["rotation"]["y"],
-            "horizon": self.last_event.metadata["agent"]["cameraHorizon"],
+            **{k: float(v) for k, v in agent_meta["position"].items()},
+            "rotation": {k: float(v) for k, v in agent_meta["rotation"].items()},
+            "horizon": float(agent_meta["cameraHorizon"]),
         }
 
     def reset(self, scene_name=None):
         if scene_name is not None and scene_name != self.scene_name:
             self.controller.reset(scene_name)
-            self.known_good_location = self.current_state()
+            assert self.last_action_success, "Could not reset to new scene"
+            self.known_good_location = self.agent_state()
         else:
             assert (
                 self.known_good_location is not None
@@ -58,8 +60,8 @@ class RoboThorEnvironment:
         k = 0
         state: Optional[Dict] = None
 
-        self.reset()
         while k == 0 or (not self.last_action_success and k < 10):
+            self.reset()
             state = {**self.random_reachable_state(seed=seed), **partial_position}
             self.controller.step("TeleportFull", **state)
             k += 1
@@ -75,20 +77,23 @@ class RoboThorEnvironment:
             self.controller.step("TeleportFull", **state, force_action=True)  # type: ignore
             assert self.last_action_success, "Force action failed with {}".format(state)
 
-        return {
-            **self.last_event.metadata["agent"]["position"],
-            "rotation": self.last_event.metadata["agent"]["rotation"]["y"],
-            "horizon": self.last_event.metadata["agent"]["cameraHorizon"],
-        }
+        return self.agent_state()
 
     def random_reachable_state(self, seed: int = None) -> Dict:
         """Returns a random reachable location in the scene."""
         if seed is not None:
             random.seed(seed)
         xyz = random.choice(self.currently_reachable_points)
-        rotation = random.choice(np.arange(0, 360, self.config["rotateStepDegrees"]))
-        horizon = random.choice([0, 30, 330])
-        return {**xyz, "rotation": rotation, "horizon": horizon}
+        rotation = random.choice(
+            np.arange(0.0, 360.0, self.config["rotateStepDegrees"])
+        )
+        # horizon = random.choice([0.0, 30.0, 330.0])
+        horizon = 0.0
+        return {
+            **{k: float(v) for k, v in xyz.items()},
+            "rotation": {"x": 0.0, "y": float(rotation), "z": 0.0},
+            "horizon": float(horizon),
+        }
 
     @property
     def currently_reachable_points(self) -> List[Dict[str, float]]:
