@@ -42,14 +42,31 @@ class ObjectNavTask(BaseObjectNavTask):
         self.reward_configs = reward_configs
         self.is_robot = False
         self.cur_dist = self.env.dist_to_object(self.task_info["object_type"])
+        self.visited = set(
+            [self.env.agent_to_grid(xz_subsampling=4, rot_subsampling=3)]
+        )  # squares of 1 m2, sectors of 90 deg
 
     def shaping(self) -> float:
         if self.reward_configs["shaping_weight"] == 0.0:
             return 0.0
 
+        # Reward getting closer to the target...
         new_dist = self.env.dist_to_object(self.task_info["object_type"])
-        rew = -(new_dist - self.cur_dist)
+        if self.cur_dist > -0.5 and new_dist > -0.5:
+            rew = self.cur_dist - new_dist
+        else:
+            rew = 0.0
         self.cur_dist = new_dist
+
+        # ...and also exploring! We won't be able to hit the optimal path in test
+        old_visited = len(self.visited)
+        self.visited.add(
+            self.env.agent_to_grid(xz_subsampling=4, rot_subsampling=3)
+        )  # squares of 1 m2, sectors of 90 deg
+        rew += self.reward_configs["exploration_shaping_weight"] * (
+            len(self.visited) - old_visited
+        )
+
         return rew * self.reward_configs["shaping_weight"]
 
     def judge(self) -> float:

@@ -246,6 +246,7 @@ class ObjectNavRoboThorExperimentConfig(ExperimentConfig):
                 "unsuccessful_action_penalty": -0.05,
                 "failed_stop_reward": -1.0,
                 "shaping_weight": 0.0,
+                "exploration_shaping_weight": 0.25,  # relative to shaping weight
             },
         }
 

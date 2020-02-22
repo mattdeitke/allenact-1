@@ -33,26 +33,70 @@ class RoboThorEnvironment:
         recursive_update(self.config, {**kwargs, "agentMode": "bot"})
         self.controller = Controller(**self.config)
         self.known_good_location = self.agent_state()
+        self.grids = {}
+
+    def get_grid(self, reachable_points):
+        points = {
+            (
+                round(p["x"] / self.config["gridSize"]),
+                round(p["z"] / self.config["gridSize"]),
+            ): p
+            for p in reachable_points
+        }
+
+        assert len(reachable_points) == len(points)
+
+        xmin, xmax = min([p[0] for p in points]), max([p[0] for p in points])
+        zmin, zmax = min([p[1] for p in points]), max([p[1] for p in points])
+
+        return {}, xmin, xmax, zmin, zmax
+
+    def access_grid(self, target):
+        if target not in self.grids[self.scene_name][0]:
+            xmin, xmax, zmin, zmax = self.grids[self.scene_name][1:5]
+            nx = xmax - xmin + 1
+            nz = zmax - zmin + 1
+            self.grids[self.scene_name][0][target] = -2 * np.ones(
+                (nx, nz), dtype=np.float64
+            )
+
+        p = self.agent_to_grid()
+
+        if self.grids[self.scene_name][0][target][p[0], p[1]] < -1.5:
+            corners = self.path_corners_to_object(target)
+            dist = self.path_corners_to_dist(corners)
+            if dist == float("inf"):
+                dist = -1.0
+            self.grids[self.scene_name][0][target][p[0], p[1]] = dist
+            return dist
+
+        return self.grids[self.scene_name][0][target][p[0], p[1]]
+
+    def add_valid_grid_points(self):
+        if self.scene_name in self.grids:
+            return
+
+        self.grids[self.scene_name] = self.get_grid(self.currently_reachable_points)
 
     def object_reachable(self, object_type):
-        return True
-        # return len(self.path_corners_to_object(object_type)) > 0
+        # return True
+        return self.access_grid(object_type) > -0.5
 
     def path_corners_to_object(self, object_type):
         pose = self.agent_state()
-        print(pose)
         position = {k: float(pose[k]) for k in ["x", "y", "z"]}
-        rotation = {**pose["rotation"]}
+        rotation = {**pose["rotation"]} if "rotation" in pose else {}
         try:
             path = metrics.get_shortest_path_to_object_type(
-                self.controller, object_type, position, rotation
+                self.controller,
+                object_type,
+                position,
+                rotation if len(rotation) > 0 else None,
             )
         except ValueError:
             path = []
         finally:
-            print("resetting", pose)
             self.controller.step("TeleportFull", **pose)
-        print(self.agent_state())
         return path
 
     def path_corners_to_dist(self, corners):
@@ -67,10 +111,24 @@ class RoboThorEnvironment:
             )
         return sum
 
+    def agent_to_grid(self, xz_subsampling=1, rot_subsampling=1):
+        pose = self.agent_state()
+        p = {k: float(pose[k]) for k in ["x", "y", "z"]}
+
+        xmin, xmax, zmin, zmax = self.grids[self.scene_name][1:5]
+        x = int(np.clip(round(p["x"] / self.config["gridSize"]), xmin, xmax))
+        z = int(np.clip(round(p["z"] / self.config["gridSize"]), zmin, zmax))
+
+        rs = self.config["rotateStepDegrees"] * rot_subsampling
+        shifted = pose["rotation"]["y"] + rs / 2
+        normalized = shifted % 360.0
+        r = int(round(normalized / rs))
+
+        return ((x - xmin) // xz_subsampling, (z - zmin) // xz_subsampling, r)
+
     def dist_to_object(self, object_type):
-        return 0
-        # corners = self.path_corners_to_object(object_type)
-        # return self.path_corners_to_dist(corners)
+        # return 0
+        return self.access_grid(object_type)
 
     def agent_state(self):
         agent_meta = self.last_event.metadata["agent"]
@@ -91,6 +149,7 @@ class RoboThorEnvironment:
             ), "Resetting scene without known good location"
             self.controller.step("TeleportFull", **self.known_good_location)
             assert self.last_action_success, "Could not reset to known good location"
+        self.add_valid_grid_points()
 
     def randomize_agent_location(
         self, seed: int = None, partial_position: Optional[Dict[str, float]] = None

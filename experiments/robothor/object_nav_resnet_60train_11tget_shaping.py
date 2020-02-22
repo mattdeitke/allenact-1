@@ -117,7 +117,7 @@ class ObjectNavRoboThorExperimentConfig(ExperimentConfig):
         "docker_enabled": False,
     }
 
-    MAX_STEPS = 100
+    MAX_STEPS = 200
 
     ADVANCE_SCENE_ROLLOUT_PERIOD = 100000
 
@@ -244,8 +244,8 @@ class ObjectNavRoboThorExperimentConfig(ExperimentConfig):
                 "goal_success_reward": 5.0,
                 "unsuccessful_action_penalty": -0.05,
                 "failed_stop_reward": -1.0,
-                "shaping_weight": 0.0,
-                "exploration_shaping_weight": 0.25,  # relative to shaping weight
+                "shaping_weight": 0.25,  # applied to the decrease in distance to target
+                "exploration_shaping_weight": 0.1,  # relative to shaping weight
             },
         }
 

@@ -64,8 +64,6 @@ class ObjectNavTaskSampler(BaseObjectNavTaskSampler):
             self.env = self._create_environment()
             self.env.reset(scene_name=scene)
 
-        pose = self.env.randomize_agent_location()
-
         object_types_in_scene = set(
             [o["objectType"] for o in self.env.last_event.metadata["objects"]]
         )
@@ -74,20 +72,27 @@ class ObjectNavTaskSampler(BaseObjectNavTaskSampler):
         task_info = OrderedDict()
         for ot in random.sample(self.object_types, len(self.object_types)):
             if ot in object_types_in_scene:
-                if self.env.object_reachable(ot):
-                    task_info["object_type"] = ot
+                for attempt in range(5):
+                    pose = self.env.randomize_agent_location()
+                    if self.env.object_reachable(ot):
+                        task_info["object_type"] = ot
+                        task_info["start_pose"] = pose
+                        break
+                    else:
+                        LOGGER.warning(
+                            "Skipping non-reachable {} from {} in {}".format(
+                                ot, pose, scene
+                            )
+                        )
+                        continue
+                if len(task_info) > 0:
                     break
-                else:
-                    LOGGER.warning("Skipping non-reachable {} in {}".format(ot, scene))
-                    continue
 
         if len(task_info) == 0:
             warnings.warn(
                 "Scene {} does not contain any"
                 " objects of any of the types {}.".format(scene, self.object_types)
             )
-
-        task_info["start_pose"] = pose
 
         task_info["actions"] = []
 
