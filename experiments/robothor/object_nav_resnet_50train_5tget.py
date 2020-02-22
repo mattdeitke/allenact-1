@@ -27,22 +27,22 @@ from rl_robothor.robothor_preprocessors import ResnetPreProcessorThor
 class ObjectNavRoboThorExperimentConfig(ExperimentConfig):
     """An object navigation experiment in RoboTHOR."""
 
-    # OBJECT_TYPES = sorted(["Television", "Mug", "Apple", "AlarmClock", "BasketBall"])
-    OBJECT_TYPES = sorted(
-        [
-            "AlarmClock",
-            "Apple",
-            "BaseballBat",
-            "BasketBall",
-            "GarbageCan",
-            "HousePlant",
-            "Laptop",
-            "Mug",
-            "SprayBottle",
-            "Television",
-            "Vase",
-        ]
-    )
+    OBJECT_TYPES = sorted(["Television", "Mug", "Apple", "AlarmClock", "BasketBall"])
+    # OBJECT_TYPES = sorted(
+    #     [
+    #         "AlarmClock",
+    #         "Apple",
+    #         "BaseballBat",
+    #         "BasketBall",
+    #         "GarbageCan",
+    #         "HousePlant",
+    #         "Laptop",
+    #         "Mug",
+    #         "SprayBottle",
+    #         "Television",
+    #         "Vase",
+    #     ]
+    # )
 
     SCREEN_SIZE = 224
 
@@ -59,7 +59,8 @@ class ObjectNavRoboThorExperimentConfig(ExperimentConfig):
 
     TRAIN_SCENES = [
         "FloorPlan_Train%d_%d" % (wall, furniture)
-        for wall in range(1, 13)
+        for wall in range(1, 11)
+        # for wall in range(1, 13)
         for furniture in range(1, 6)
     ]
 
@@ -119,20 +120,20 @@ class ObjectNavRoboThorExperimentConfig(ExperimentConfig):
 
     MAX_STEPS = 100
 
-    ADVANCE_SCENE_ROLLOUT_PERIOD = 100000
+    ADVANCE_SCENE_ROLLOUT_PERIOD = 1000000000
 
     @classmethod
     def tag(cls):
-        return "object_nav_resnet_60train_11tget"
+        return "object_nav_resnet_50train_5tget"
 
     def training_pipeline(cls, **kwargs):
         a2c_steps = int(1e9)
-        lr = 3e-4  # 5e-4
+        lr = 1e-3  # 5e-4
         num_mini_batch = 1
         update_repeats = 1
         num_steps = 30
-        log_interval = 10000
-        save_interval = 200000
+        log_interval = cls.MAX_STEPS * 100  # Log every 50 max length tasks
+        save_interval = 200000  # Save every 100000 steps (approximately)
         gamma = 0.99
         use_gae = True
         gae_lambda = 0.95
@@ -159,12 +160,12 @@ class ObjectNavRoboThorExperimentConfig(ExperimentConfig):
         )
 
     def single_gpu(self):
-        return 7
+        return 5
 
     def machine_params(self, mode="train", **kwargs):
         if mode == "train":
-            nprocesses = 120
-            sampler_devices = [0, 1, 2, 3, 4, 5, 6, 7]
+            nprocesses = 50
+            sampler_devices = [0, 1, 2, 3, 4]
             gpu_ids = [] if not torch.cuda.is_available() else [self.single_gpu()]
         elif mode == "valid":
             nprocesses = 0
@@ -241,7 +242,7 @@ class ObjectNavRoboThorExperimentConfig(ExperimentConfig):
             "deterministic_cudnn": deterministic_cudnn,
             "rewards_config": {
                 "step_penalty": -0.01,
-                "goal_success_reward": 5.0,
+                "goal_success_reward": 5,
                 "unsuccessful_action_penalty": -0.05,
                 "failed_stop_reward": -1.0,
                 "shaping_weight": 0.0,

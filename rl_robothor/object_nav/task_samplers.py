@@ -3,8 +3,10 @@ import warnings
 import typing
 from typing import Optional, Dict, List, Any
 from collections import OrderedDict
+import logging
 
 import gym
+from ai2thor.util import metrics
 
 from .tasks import ObjectNavTask
 from ..robothor_environment import RoboThorEnvironment
@@ -12,6 +14,8 @@ from rl_ai2thor.object_nav.task_samplers import (
     ObjectNavTaskSampler as BaseObjectNavTaskSampler,
 )
 from rl_base.sensor import Sensor
+
+LOGGER = logging.getLogger("embodiedrl")
 
 
 class ObjectNavTaskSampler(BaseObjectNavTaskSampler):
@@ -66,11 +70,16 @@ class ObjectNavTaskSampler(BaseObjectNavTaskSampler):
             [o["objectType"] for o in self.env.last_event.metadata["objects"]]
         )
 
+        # Assume at least one target will be reachable:
         task_info = OrderedDict()
         for ot in random.sample(self.object_types, len(self.object_types)):
             if ot in object_types_in_scene:
-                task_info["object_type"] = ot
-                break
+                if self.env.object_reachable(ot):
+                    task_info["object_type"] = ot
+                    break
+                else:
+                    LOGGER.warning("Skipping non-reachable {} in {}".format(ot, scene))
+                    continue
 
         if len(task_info) == 0:
             warnings.warn(

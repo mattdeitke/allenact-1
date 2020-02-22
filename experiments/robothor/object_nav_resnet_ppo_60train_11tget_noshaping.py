@@ -10,13 +10,13 @@ from torchvision import models
 from torch.optim.lr_scheduler import LambdaLR
 
 
-from onpolicy_sync.losses.a2cacktr import A2CConfig
+from onpolicy_sync.losses.ppo import PPOConfig
 from models.resnet_tensor_object_nav_models import ResnetTensorObjectNavActorCritic
 from rl_ai2thor.ai2thor_sensors import RGBSensorThor, GoalObjectTypeThorSensor
 from rl_robothor.object_nav.task_samplers import ObjectNavTaskSampler
 from rl_robothor.object_nav.tasks import ObjectNavTask
 from utils.experiment_utils import Builder, PipelineStage, TrainingPipeline, LinearDecay
-from onpolicy_sync.losses import A2C
+from onpolicy_sync.losses import PPO
 from rl_base.experiment_config import ExperimentConfig
 from rl_base.task import TaskSampler
 
@@ -109,7 +109,7 @@ class ObjectNavRoboThorExperimentConfig(ExperimentConfig):
         "height": 480,
         "agentMode": "bot",
         "agentType": "stochastic",
-        "rotateStepDegrees": 30,
+        "rotateStepDegrees": 30.0,
         "visibilityDistance": 1.0,
         "continuousMode": True,
         "snapToGrid": False,
@@ -117,21 +117,21 @@ class ObjectNavRoboThorExperimentConfig(ExperimentConfig):
         "docker_enabled": False,
     }
 
-    MAX_STEPS = 100
+    MAX_STEPS = 500
 
     ADVANCE_SCENE_ROLLOUT_PERIOD = 100000
 
     @classmethod
     def tag(cls):
-        return "object_nav_resnet_60train_11tget"
+        return "object_nav_resnet_ppo_60train_11tget"
 
     def training_pipeline(cls, **kwargs):
-        a2c_steps = int(1e9)
-        lr = 3e-4  # 5e-4
+        ppo_steps = int(1e9)
+        lr = 2.5e-4  # 5e-4
         num_mini_batch = 1
-        update_repeats = 1
-        num_steps = 30
-        log_interval = 10000
+        update_repeats = 4
+        num_steps = 128
+        log_interval = 10000  # Log every 10000 steps
         save_interval = 200000
         gamma = 0.99
         use_gae = True
@@ -144,17 +144,17 @@ class ObjectNavRoboThorExperimentConfig(ExperimentConfig):
             num_mini_batch=num_mini_batch,
             update_repeats=update_repeats,
             num_steps=num_steps,
-            named_losses={"a2c_loss": Builder(A2C, dict(), default=A2CConfig,),},
+            named_losses={"ppo_loss": Builder(PPO, dict(), default=PPOConfig,),},
             gamma=gamma,
             use_gae=use_gae,
             gae_lambda=gae_lambda,
             max_grad_norm=max_grad_norm,
             advance_scene_rollout_period=cls.ADVANCE_SCENE_ROLLOUT_PERIOD,
             pipeline_stages=[
-                PipelineStage(loss_names=["a2c_loss"], end_criterion=a2c_steps,),
+                PipelineStage(loss_names=["ppo_loss"], end_criterion=ppo_steps,),
             ],
             lr_scheduler_builder=Builder(
-                LambdaLR, {"lr_lambda": LinearDecay(steps=a2c_steps, endp=1e-3)}
+                LambdaLR, {"lr_lambda": LinearDecay(steps=ppo_steps, endp=1e-3)}
             ),
         )
 
@@ -241,9 +241,9 @@ class ObjectNavRoboThorExperimentConfig(ExperimentConfig):
             "deterministic_cudnn": deterministic_cudnn,
             "rewards_config": {
                 "step_penalty": -0.01,
-                "goal_success_reward": 5.0,
+                "goal_success_reward": 10.0,
                 "unsuccessful_action_penalty": -0.05,
-                "failed_stop_reward": -1.0,
+                "failed_stop_reward": 0.0,
                 "shaping_weight": 0.0,
             },
         }

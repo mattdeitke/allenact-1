@@ -4,9 +4,11 @@ import logging
 import random
 import copy
 from collections import OrderedDict
+import math
 
 import ai2thor
 from ai2thor.controller import Controller
+from ai2thor.util import metrics
 import numpy as np
 
 from utils.experiment_utils import recursive_update
@@ -32,26 +34,51 @@ class RoboThorEnvironment:
         self.controller = Controller(**self.config)
         self.known_good_location = self.agent_state()
 
+    def object_reachable(self, object_type):
+        return True
+        # return len(self.path_corners_to_object(object_type)) > 0
+
+    def path_corners_to_object(self, object_type):
+        pose = self.agent_state()
+        print(pose)
+        position = {k: float(pose[k]) for k in ["x", "y", "z"]}
+        rotation = {**pose["rotation"]}
+        try:
+            path = metrics.get_shortest_path_to_object_type(
+                self.controller, object_type, position, rotation
+            )
+        except ValueError:
+            path = []
+        finally:
+            print("resetting", pose)
+            self.controller.step("TeleportFull", **pose)
+        print(self.agent_state())
+        return path
+
+    def path_corners_to_dist(self, corners):
+        if len(corners) == 0:
+            return float("inf")
+
+        sum = 0
+        for it in range(1, len(corners)):
+            sum += math.sqrt(
+                (corners[it]["x"] - corners[it - 1]["x"]) ** 2
+                + (corners[it]["z"] - corners[it - 1]["z"]) ** 2
+            )
+        return sum
+
+    def dist_to_object(self, object_type):
+        return 0
+        # corners = self.path_corners_to_object(object_type)
+        # return self.path_corners_to_dist(corners)
+
     def agent_state(self):
         agent_meta = self.last_event.metadata["agent"]
-        return OrderedDict(
-            sorted(
-                [(k, float(v)) for k, v in agent_meta["position"].items()],
-                key=lambda x: x[0],
-            )
-            + [
-                (
-                    "rotation",
-                    OrderedDict(
-                        sorted(
-                            [(k, float(v)) for k, v in agent_meta["rotation"].items()],
-                            key=lambda x: x[0],
-                        )
-                    ),
-                )
-            ]
-            + [("horizon", float(agent_meta["cameraHorizon"]))]
-        )
+        return {
+            **{k: float(v) for k, v in agent_meta["position"].items()},
+            "rotation": {k: float(v) for k, v in agent_meta["rotation"].items()},
+            "horizon": float(agent_meta["cameraHorizon"]),
+        }
 
     def reset(self, scene_name=None):
         if scene_name is not None and scene_name != self.scene_name:
