@@ -109,3 +109,96 @@ class ObjectNavTask(BaseObjectNavTask):
     @classmethod
     def action_names(cls) -> Tuple[str, ...]:
         return cls._actions
+
+    def scan(
+        self, postaction, criterion, vert=False, default_action=END
+    ) -> Tuple[int, bool]:
+        # TODO move to environment
+        ROT_ANGLE = 30
+        GRID_SIZE = 0.25
+
+        # rots = (
+        #     [[]]
+        #     + [[ROTATE_LEFT]] * (180 // ROT_ANGLE)
+        #     + [[ROTATE_RIGHT]] * (180 // ROT_ANGLE - 1)
+        # )
+        rots = [[ROTATE_LEFT] * it for it in range((180 // ROT_ANGLE) + 1)] + [
+            [ROTATE_RIGHT] * it for it in range(1, (180 // ROT_ANGLE))
+        ][::-1]
+        verts = [[], [LOOK_UP], [LOOK_DOWN]] if vert else [[]]
+
+        old_dist = self.env.dist_to_object(self.task_info["object_type"])
+
+        astate = self.env.agent_state()
+
+        paths = {}
+        for rit in range(360 // ROT_ANGLE):
+            rpath = rots[rit]
+            cstate = self.env.agent_state()
+            for v in verts:
+                vpath = rpath + v
+                if len(v) > 0:
+                    self.env.step({"action": v[0]})
+
+                vpath.append(postaction)
+                self.env.step({"action": postaction})
+
+                new_dist = self.env.dist_to_object(self.task_info["object_type"])
+                valid = criterion(old_dist, new_dist, GRID_SIZE)
+                if valid:
+                    if new_dist in paths:
+                        paths[new_dist].append(vpath)
+                    else:
+                        paths[new_dist] = [vpath]
+
+                self.env.step({"action": "TeleportFull", **cstate})
+            self.env.step({"action": ROTATE_LEFT})
+
+        self.env.step({"action": "TeleportFull", **astate})
+
+        dists = paths.keys()
+        if len(dists) == 0:
+            return default_action, False
+
+        dists = sorted(dists)
+        cands = paths[dists[0]]
+        cands = sorted(cands, key=lambda x: len(x))
+        assert len(cands[0]) > 0
+        return cands[0][0], True
+
+    def scan_success(self, new_dist, old_dist, GRID_SIZE, eps=1e-6):
+        if new_dist > -0.5:
+            if old_dist > -0.5 and new_dist < old_dist:
+                return (
+                    self.last_action_success
+                    and old_dist - new_dist < 2 * GRID_SIZE + eps
+                )  # maybe we make an illegal move?
+            else:
+                return self.last_action_success
+        else:
+            return False
+
+    def query_expert(self) -> Tuple[int, bool]:
+        action2id = {action: it for it, action in enumerate(self._actions)}
+
+        if self._is_goal_object_visible():
+            act, valid = END, True
+        else:
+            if self.env.dist_to_object(self.task_info["object_type"]) == 0.0:
+                # our snapped to grid expert thinks we're already there,
+                # so try look up/down in different angles, else finish with False
+                act, valid = self.scan(
+                    lambda x: END,
+                    lambda x, y, z: self._is_goal_object_visible(),
+                    vert=True,
+                    default_action=END,
+                )
+            else:
+                act, valid = self.scan(
+                    lambda x: MOVE_AHEAD,
+                    self.scan_success,
+                    vert=False,
+                    default_action=END,
+                )  # this might break the causality assumption, but at some point the agent will likely have observed the target
+
+        return action2id[act], valid
