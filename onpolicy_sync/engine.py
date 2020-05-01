@@ -11,7 +11,6 @@ import typing
 import warnings
 from multiprocessing.context import BaseContext
 from typing import Optional, Any, Dict, Union, List, Tuple
-import logging
 import json
 from collections import OrderedDict
 
@@ -27,7 +26,8 @@ import numpy as np
 
 from onpolicy_sync.losses.abstract_loss import AbstractActorCriticLoss
 from onpolicy_sync.storage import RolloutStorage
-from onpolicy_sync.vector_sampled_tasks import VectorSampledTasks
+from onpolicy_sync.vector_sampled_tasks import VectorSampledTasks, ThreadedVectorSampledTasks
+from onpolicy_sync.vector_preprocessed_tasks import VectorPreprocessedTasks, ThreadedVectorPreprocessedTasks
 from rl_base.experiment_config import ExperimentConfig
 from utils.experiment_utils import (
     ScalarMeanTracker,
@@ -39,8 +39,7 @@ from utils.experiment_utils import (
     PipelineStage,
 )
 from utils.tensor_utils import batch_observations, SummaryWriter, tensor_to_video
-
-LOGGER = logging.getLogger("embodiedrl")
+from utils.system import init_logging, LOGGER
 
 
 def validate(
@@ -52,6 +51,7 @@ def validate(
     deterministic_cudnn: bool = False,
     mp_ctx: Optional[BaseContext] = None,
 ):
+    init_logging()
     ptitle("Validation")
     evaluator = OnPolicyValidator(
         config=config,
@@ -122,36 +122,13 @@ class OnPolicyRLEngine(object):
                 )
             else:
                 self.device = "cuda:%d" % self.machine_params["gpu_ids"][0]
-                torch.cuda.set_device(self.device)  # type: ignore
+                # torch.cuda.set_device(self.device)  # type: ignore
 
         if self.deterministic_cudnn:
             set_deterministic_cudnn()
 
         if self.seed is not None:
             set_seed(self.seed)
-
-        self.observation_set = None
-        if "observation_set" in self.machine_params:
-            self.observation_set = self.machine_params["observation_set"].to(
-                self.device
-            )
-            self.actor_critic = config.create_model(
-                observation_set=self.observation_set
-            ).to(self.device)
-        else:
-            self.actor_critic = config.create_model().to(self.device)
-
-        self.optimizer: Optional[optim.Optimizer] = None  # type: ignore
-        self.lr_scheduler: Optional[optim.lr_scheduler._LRScheduler] = None
-        if mode == "train":
-            self.optimizer = self.training_pipeline.optimizer_builder(
-                params=[p for p in self.actor_critic.parameters() if p.requires_grad]
-            )
-
-            if self.training_pipeline.lr_scheduler_builder is not None:
-                self.lr_scheduler = self.training_pipeline.lr_scheduler_builder(
-                    optimizer=self.optimizer
-                )
 
         self._vector_tasks: Optional[VectorSampledTasks] = None
 
@@ -229,6 +206,50 @@ class OnPolicyRLEngine(object):
                 )
                 self.eval_process.start()
 
+        self.observation_set = None
+        if ('make_preprocessors_fns' in self.machine_params
+                and self.machine_params["make_preprocessors_fns"] is not None
+                and len(self.machine_params["make_preprocessors_fns"]) > 0):
+            observation_set = self.machine_params["make_preprocessors_fns"][0]()
+            self.actor_critic = config.create_model(
+                observation_set=observation_set
+            ).to(self.device)
+            del observation_set
+        elif "observation_set" in self.machine_params and self.machine_params["observation_set"] is not None:
+            self.observation_set = self.machine_params["observation_set"].to(
+                self.device
+            )
+            self.actor_critic = config.create_model(
+                observation_set=self.observation_set
+            ).to(self.device)
+        else:
+            self.actor_critic = config.create_model().to(self.device)
+
+        if ('make_preprocessors_fns' in self.machine_params
+                and self.machine_params["make_preprocessors_fns"] is not None
+                and len(self.machine_params["make_preprocessors_fns"]) == 0):
+            LOGGER.warning("Found empty make_preprocessors_fns list in machine_params")
+
+        # if self.mode == "train" and len(self.machine_params["gpu_ids"]) > 0:
+        #     LOGGER.info("Using data parallelism to actor critic")
+        #     self.actor_critic = torch.nn.DataParallel(self.actor_critic).to("cuda")
+        #     self.is_data_parallel = True
+        # else:
+        #     self.is_data_parallel = False
+        self.is_data_parallel = False
+
+        self.optimizer: Optional[optim.Optimizer] = None  # type: ignore
+        self.lr_scheduler: Optional[optim.lr_scheduler._LRScheduler] = None
+        if mode == "train":
+            self.optimizer = self.training_pipeline.optimizer_builder(
+                params=[p for p in self.actor_critic.parameters() if p.requires_grad]
+            )
+
+            if self.training_pipeline.lr_scheduler_builder is not None:
+                self.lr_scheduler = self.training_pipeline.lr_scheduler_builder(
+                    optimizer=self.optimizer
+                )
+
         self._is_closed: bool = False
 
     @property
@@ -237,14 +258,36 @@ class OnPolicyRLEngine(object):
             seeds = self.worker_seeds(
                 self.machine_params["nprocesses"], initial_seed=self.seed
             )
-            self._vector_tasks = VectorSampledTasks(
-                make_sampler_fn=self.config.make_sampler_fn,
-                sampler_fn_args=self.get_sampler_fn_args(self.config, seeds),
-                multiprocessing_start_method="forkserver"
-                if self.mp_ctx is None
-                else None,
-                mp_ctx=self.mp_ctx,
-            )
+            if ('make_preprocessors_fns' in self.machine_params
+                    and self.machine_params["make_preprocessors_fns"] is not None
+                    and len(self.machine_params["make_preprocessors_fns"]) > 0):
+                assert "task_sampler_ids" in self.machine_params, "Missing task_sampler_ids for machine_params with make_preprocessors_fns"
+                # self._vector_tasks = ThreadedVectorPreprocessedTasks(  # TODO Debugging
+                self._vector_tasks = VectorPreprocessedTasks(
+                    make_preprocessors_fn=self.machine_params["make_preprocessors_fns"],
+                    task_sampler_ids=self.machine_params["task_sampler_ids"],
+                    make_sampler_fn=self.config.make_sampler_fn,
+                    sampler_fn_args=self.get_sampler_fn_args(self.config, seeds),
+                    multiprocessing_start_method="forkserver"
+                    if self.mp_ctx is None
+                    else None,
+                    mp_ctx=self.mp_ctx,
+                )
+            else:
+                if ('make_preprocessors_fns' in self.machine_params
+                        and self.machine_params["make_preprocessors_fns"] is not None
+                        and len(self.machine_params["make_preprocessors_fns"]) == 0):
+                    LOGGER.warning("Found empty make_preprocessors_fns list in machine_params")
+
+                # self._vector_tasks = ThreadedVectorSampledTasks(  # TODO Debugging
+                self._vector_tasks = VectorSampledTasks(
+                    make_sampler_fn=self.config.make_sampler_fn,
+                    sampler_fn_args=self.get_sampler_fn_args(self.config, seeds),
+                    multiprocessing_start_method="forkserver"
+                    if self.mp_ctx is None
+                    else None,
+                    mp_ctx=self.mp_ctx,
+                )
         return self._vector_tasks
 
     @staticmethod
@@ -284,7 +327,6 @@ class OnPolicyRLEngine(object):
                 total_processes=self.machine_params["nprocesses"],
                 devices=devices,
                 seeds=seeds,
-                deterministic_cudnn=self.deterministic_cudnn,
             )
             for it in range(self.machine_params["nprocesses"])
         ]
@@ -322,7 +364,7 @@ class OnPolicyRLEngine(object):
             "step_count": self.step_count,
             "local_start_time_str": self.local_start_time_str,
             "optimizer_state_dict": self.optimizer.state_dict(),  # type: ignore
-            "model_state_dict": self.actor_critic.state_dict(),
+            "model_state_dict": self.actor_critic.state_dict() if not self.is_data_parallel else self.actor_critic.module,
             "trainer_seed": self.seed,
             "extra_tag": self.extra_tag,
         }
@@ -349,7 +391,10 @@ class OnPolicyRLEngine(object):
             ckpt,
         )
 
-        self.actor_critic.load_state_dict(ckpt["model_state_dict"])
+        if not self.is_data_parallel:
+            self.actor_critic.load_state_dict(ckpt["model_state_dict"])
+        else:
+            self.actor_critic.module.load_state_dict(ckpt["model_state_dict"])
         self.step_count = ckpt["step_count"]  # type: ignore
         self.total_steps = ckpt["total_steps"]  # type: ignore
 
@@ -382,7 +427,7 @@ class OnPolicyRLEngine(object):
     def process_eval_metrics(self, count=-1):
         unused = []
         used = []
-        while (not self.vector_tasks.metrics_out_queue.empty()) or (count > 0):
+        while (count < 0 and not self.vector_tasks.metrics_out_queue.empty()) or (count > 0):
             try:
                 if count < 0:
                     metric = self.vector_tasks.metrics_out_queue.get_nowait()
@@ -397,7 +442,8 @@ class OnPolicyRLEngine(object):
                         {k: v for k, v in metric.items() if k != "task_info"}
                     )
                     used.append(metric)
-                    count -= 1
+                    if count > 0:
+                        count -= 1
             except queue.Empty:
                 pass
 
@@ -419,9 +465,14 @@ class OnPolicyRLEngine(object):
                     count -= 1
                 if isinstance(metric, tuple):
                     pkg_type, info = metric
+
                     if pkg_type in ["valid_metrics", "test_metrics"]:
                         mode = pkg_type.split("_")[0]
-                        scalars, render = info
+                        if "render_video" in self.machine_params and self.machine_params["render_video"]:
+                            scalars, render = info
+                        else:
+                            scalars = info
+                            render = None
                         metrics = OrderedDict(
                             sorted(
                                 [(k, v) for k, v in scalars.items()], key=lambda x: x[0]
@@ -606,10 +657,7 @@ class OnPolicyRLEngine(object):
     def collect_rollout_step(self, rollouts: RolloutStorage, render=None):
         # sample actions
         with torch.no_grad():
-            step_observation = {
-                k: v[rollouts.step] for k, v in rollouts.observations.items()
-            }
-
+            step_observation = rollouts.pick_observation_step(rollouts.step)
             actor_critic_output, recurrent_hidden_states = self.actor_critic(
                 step_observation,
                 rollouts.recurrent_hidden_states[rollouts.step],
@@ -714,10 +762,8 @@ class OnPolicyRLEngine(object):
                 self.collect_rollout_step(rollouts)
 
             with torch.no_grad():
-                step_observation = {k: v[-1] for k, v in rollouts.observations.items()}
-
                 actor_critic_output, _ = self.actor_critic(
-                    step_observation,
+                    rollouts.pick_observation_step(-1),
                     rollouts.recurrent_hidden_states[-1],
                     rollouts.prev_actions[-1],
                     rollouts.masks[-1],
@@ -760,6 +806,7 @@ class OnPolicyRLEngine(object):
             if (self.advance_scene_rollout_period is not None) and (
                 self.rollout_count % self.advance_scene_rollout_period == 0
             ):
+                LOGGER.info("Force advance tasks with {} rollouts".format(self.rollout_count))
                 self.vector_tasks.next_task(force_advance_scene=True)
                 self.initialize_rollouts(rollouts)
 
@@ -970,7 +1017,9 @@ class OnPolicyRLEngine(object):
                     gae_lambda=self._stage_value(stage, "gae_lambda"),
                     max_grad_norm=self._stage_value(stage, "max_grad_norm"),
                     advance_scene_rollout_period=self._stage_value(
-                        stage, "advance_scene_rollout_period"
+                        stage,
+                        "advance_scene_rollout_period",
+                        allow_none=True
                     ),
                     teacher_forcing=stage.teacher_forcing,
                 )
@@ -979,9 +1028,9 @@ class OnPolicyRLEngine(object):
                     RolloutStorage(
                         self.steps_in_rollout,
                         self.num_processes,
-                        self.actor_critic.action_space,
-                        self.actor_critic.recurrent_hidden_state_size,
-                        num_recurrent_layers=self.actor_critic.num_recurrent_layers,
+                        self.actor_critic.action_space if not self.is_data_parallel else self.actor_critic.module.action_space,
+                        self.actor_critic.recurrent_hidden_state_size if not self.is_data_parallel else self.actor_critic.module.recurrent_hidden_state_size,
+                        num_recurrent_layers=self.actor_critic.num_recurrent_layers if not self.is_data_parallel else self.actor_critic.module.num_recurrent_layers,
                     )
                 )
 
@@ -1029,8 +1078,12 @@ class OnPolicyRLEngine(object):
                         pass
 
                 if command == "eval":
-                    scalars, render, samples = self.run_eval(checkpoint_file_name=data)
-                    write_to_parent.put(("valid_metrics", (scalars, render)))
+                    if "render_video" in self.machine_params and self.machine_params["render_video"]:
+                        scalars, render, samples = self.run_eval(checkpoint_file_name=data, render_video=True)
+                        write_to_parent.put(("valid_metrics", (scalars, render)))
+                    else:
+                        scalars, samples = self.run_eval(checkpoint_file_name=data)
+                        write_to_parent.put(("valid_metrics", (scalars)))
                 elif command in ["quit", "exit", "close"]:
                     self.close(verbose=False)
                     sys.exit()
@@ -1063,18 +1116,18 @@ class OnPolicyRLEngine(object):
             render = None
         return render
 
-    def run_eval(self, checkpoint_file_name: str, rollout_steps=1, max_clip_len=2000):
+    def run_eval(self, checkpoint_file_name: str, rollout_steps=1, max_clip_len=2000, render_video=False):
         self.checkpoint_load(checkpoint_file_name, verbose=False)
 
         rollouts = RolloutStorage(
             rollout_steps,
             self.num_processes,
-            self.actor_critic.action_space,
-            self.actor_critic.recurrent_hidden_state_size,
-            num_recurrent_layers=self.actor_critic.num_recurrent_layers,
+            self.actor_critic.action_space if not self.is_data_parallel else self.actor_critic.module.action_space,
+            self.actor_critic.recurrent_hidden_state_size if not self.is_data_parallel else self.actor_critic.module.recurrent_hidden_state_size,
+            num_recurrent_layers=self.actor_critic.num_recurrent_layers if not self.is_data_parallel else self.actor_critic.module.num_recurrent_layers,
         )
 
-        render: Union[None, np.ndarray, List[np.ndarray]] = []
+        render: Union[None, np.ndarray, List[np.ndarray]] = [] if render_video else None
         num_paused = self.initialize_rollouts(rollouts, render=render)
         steps = 0
         while num_paused < self.num_processes:
@@ -1086,13 +1139,18 @@ class OnPolicyRLEngine(object):
         self.vector_tasks.resume_all()
         self.vector_tasks.reset_all()
 
-        render = self.process_video(render, max_clip_len)
-
         metrics, samples = self.process_eval_metrics(count=self.num_processes)
+
+        if render_video:
+            render = self.process_video(render, max_clip_len)
+            return (
+                {k: (v, self.total_steps + self.step_count) for k, v in metrics.items()},
+                render,
+                samples,
+            )
 
         return (
             {k: (v, self.total_steps + self.step_count) for k, v in metrics.items()},
-            render,
             samples,
         )
 

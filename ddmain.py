@@ -1,17 +1,15 @@
-"""Entry point to training/validating/testing for a user given experiment
-name."""
+"""Entry point to training/validating/testing for a user given experiment name"""
 
 import argparse
 import importlib
 import inspect
-import logging
 import os
 import sys
 from typing import Dict, Tuple
 
 from setproctitle import setproctitle as ptitle
 
-from onpolicy_sync.engine import OnPolicyTrainer, OnPolicyTester
+from onpolicy_sync.runner import OnPolicyRunner
 from rl_base.experiment_config import ExperimentConfig
 from utils.system import init_logging, LOGGER
 
@@ -33,8 +31,8 @@ def _get_args():
         default="",
         required=False,
         help="Add an extra tag to the experiment when trying out new ideas (will be used"
-        "as a subdirectory of the tensorboard path so you will be able to"
-        "search tensorboard logs using this extra tag).",
+             "as a suffix of the experiment name). It also has to be provided when testing on"
+             "the trained model.",
     )
 
     parser.add_argument(
@@ -63,8 +61,18 @@ def _get_args():
         required=False,
         default=None,
         type=str,
-        help="optional checkpoint file name to resume training",
+        help="optional checkpoint file name to resume training or test",
     )
+    parser.add_argument(
+        "-r",
+        "--restart",
+        dest="restart",
+        action="store_true",
+        required=False,
+        help="for training, if checkpoint is specified, use it as model initialization and "
+             "restart training with current config",
+    )
+    parser.set_defaults(restart=False)
 
     parser.add_argument(
         "-d",
@@ -79,7 +87,8 @@ def _get_args():
     parser.add_argument(
         "-t",
         "--test_date",
-        default="",
+        default=None,
+        type=str,
         required=False,
         help="tests the experiment run on specified date (formatted as %%Y-%%m-%%d_%%H-%%M-%%S), assuming it was "
         "previously trained. If no checkpoint is specified, it will run on all checkpoints enabled by "
@@ -142,16 +151,6 @@ def _load_config(args) -> Tuple[ExperimentConfig, Dict[str, Tuple[str, str]]]:
     return config, sources
 
 
-def _download_ai2thor():
-    from ai2thor.controller import Controller
-
-    try:
-        c = Controller(download_only=True, include_private_scenes=True)
-        c.stop_unity()
-    except Exception as _:
-        pass
-
-
 def main():
     init_logging()
 
@@ -159,29 +158,30 @@ def main():
 
     LOGGER.info("Running with args {}".format(args))
 
-    _download_ai2thor()
-
-    ptitle("Master: {}".format("Training" if not args.test_date != "" else "Testing"))
+    ptitle("Master: {}".format("Training" if args.test_date is None else "Testing"))
 
     cfg, srcs = _load_config(args)
 
-    if args.test_date == "":
-        OnPolicyTrainer(
+    if args.test_date is None:
+        OnPolicyRunner(
             config=cfg,
             output_dir=args.output_dir,
             loaded_config_src_files=srcs,
             seed=args.seed,
+            mode="train",
             deterministic_cudnn=args.deterministic_cudnn,
             extra_tag=args.extra_tag,
-        ).run_pipeline(args.checkpoint)
+        ).start_train(args.checkpoint, args.restart)
     else:
-        OnPolicyTester(
+        OnPolicyRunner(
             config=cfg,
             output_dir=args.output_dir,
             loaded_config_src_files=srcs,
             seed=args.seed,
+            mode="test",
             deterministic_cudnn=args.deterministic_cudnn,
-        ).run_test(args.test_date, args.checkpoint, args.skip_checkpoints)
+            extra_tag=args.extra_tag,
+        ).start_test(args.test_date, args.checkpoint, args.skip_checkpoints)
 
 
 if __name__ == "__main__":
