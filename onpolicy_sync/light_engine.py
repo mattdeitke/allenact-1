@@ -393,7 +393,7 @@ class OnPolicyRLEngine(object):
         done = False
         while not done:
             item = self.vector_tasks.metrics_out_queue.get()  # at least, there'll be a sentinel
-            if item[0] == "aggregate.AUTO.sentinel":
+            if isinstance(item, tuple) and item[0] == "aggregate.AUTO.sentinel":
                 assert item[1] == sentinel[1], "wrong sentinel found: {} vs {}".format(item[1], sentinel[1])
                 done = True
             else:
@@ -501,7 +501,7 @@ class OnPolicyRLEngine(object):
     def _active_memory(memory, keep):
         if isinstance(memory, torch.Tensor):
             # rnn hidden state
-            LOGGER.info("memory {} keep {}".format(memory.shape, len(keep)))
+            # LOGGER.info("memory {} keep {}".format(memory.shape, len(keep)))
             return memory[:, keep] if memory.shape[1] > len(keep) else memory
 
         # arbitrary memory
@@ -1027,12 +1027,15 @@ class OnPolicyTrainer(OnPolicyRLEngine):
                 self.collect_rollout_step(rollouts)
                 if self.is_distributed:
                     # Preempt stragglers
+                    num_done = int(self.num_workers_done.get("done"))
                     if (
-                        int(self.num_workers_done.get("done")) > self.distributed_preemption_threshold * self.num_workers
-                        and self.tstate.steps_in_rollout / 4 <= step < 0.95 * self.tstate.steps_in_rollout
+                        num_done > self.distributed_preemption_threshold * self.num_workers
+                        and self.tstate.steps_in_rollout / 4 <= step < 0.95 * (self.tstate.steps_in_rollout - 1)
                     ):
+                        LOGGER.debug("{} worker {} narrowed rollouts at step {} ({}) with {} done".format(
+                            self.mode, self.worker_id, rollouts.step, step, num_done
+                        ))
                         rollouts.narrow()
-                        LOGGER.debug("{} worker {} narrowed rollouts at step {} ({})".format(self.mode, self.worker_id, rollouts.step, step))
                         break
 
             with torch.no_grad():
@@ -1152,7 +1155,7 @@ class OnPolicyTrainer(OnPolicyRLEngine):
                     log_interval=self.tstate.log_interval,
                     save_interval=self.tstate.save_interval,
                     last_log=self.step_count - self.tstate.log_interval,
-                    last_save=self.step_count,
+                    last_save=self.step_count - (self.tstate.log_interval if stage_num == 0 else 0),  # enforce early val
                     tracking_types=('update',) if stage.teacher_forcing is None else ('update', 'teacher'),
                     former_steps=self.step_count,
                 )
@@ -1258,7 +1261,8 @@ class OnPolicyInference(OnPolicyRLEngine):
         metrics_pkg, task_outputs = self.aggregate_task_metrics()
 
         pkg_type = "{}_package".format(self.mode)
-        payload = (metrics_pkg, task_outputs, visualizer.read_and_reset(), checkpoint_file_name)
+        viz_package = visualizer.read_and_reset() if visualizer is not None else None
+        payload = (metrics_pkg, task_outputs, viz_package, checkpoint_file_name)
         nsteps = self.total_steps + self.step_count
 
         return pkg_type, payload, nsteps
@@ -1273,7 +1277,7 @@ class OnPolicyInference(OnPolicyRLEngine):
             new_command, new_data = self.checkpoints_queue.get()  # block until next command arrives
             if new_command == command:
                 data = new_data
-            elif new_command == "sentinel":
+            elif new_command == sentinel[0]:
                 assert new_data == sentinel[1], "wrong sentinel found: {} vs {}".format(new_data, sentinel[1])
                 forwarded = True
             else:
